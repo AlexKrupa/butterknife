@@ -9,7 +9,7 @@ import java.lang.annotation.Target;
 
 import static android.widget.AdapterView.OnItemSelectedListener;
 import static java.lang.annotation.ElementType.METHOD;
-import static java.lang.annotation.RetentionPolicy.CLASS;
+import static java.lang.annotation.RetentionPolicy.RUNTIME;
 
 /**
  * Bind a method to an {@link OnItemSelectedListener OnItemSelectedListener} on the view for each
@@ -34,7 +34,7 @@ import static java.lang.annotation.RetentionPolicy.CLASS;
  * @see OnItemSelectedListener
  */
 @Target(METHOD)
-@Retention(CLASS)
+@Retention(RUNTIME)
 @ListenerClass(
     targetType = "android.widget.AdapterView<?>",
     setter = "setOnItemSelectedListener",

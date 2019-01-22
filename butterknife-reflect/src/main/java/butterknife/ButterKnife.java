@@ -18,13 +18,7 @@ import android.view.animation.Animation;
 import android.widget.AdapterView;
 import android.widget.CompoundButton;
 import android.widget.TextView;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-import androidx.annotation.UiThread;
-import androidx.core.content.ContextCompat;
-import androidx.core.content.res.ResourcesCompat;
-import butterknife.internal.Constants;
-import butterknife.internal.Utils;
+
 import java.lang.annotation.Annotation;
 import java.lang.reflect.AccessibleObject;
 import java.lang.reflect.Array;
@@ -37,6 +31,14 @@ import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.UiThread;
+import androidx.core.content.ContextCompat;
+import androidx.core.content.res.ResourcesCompat;
+import butterknife.internal.Constants;
+import butterknife.internal.Utils;
 
 import static java.lang.reflect.Modifier.PRIVATE;
 import static java.lang.reflect.Modifier.PUBLIC;
@@ -188,6 +190,8 @@ public final class ButterKnife {
         }
       }
 
+      OnItemSelectedBinder onItemSelectedBinder = new OnItemSelectedBinder();
+
       for (Method method : targetClass.getDeclaredMethods()) {
         Unbinder unbinder;
 
@@ -214,7 +218,12 @@ public final class ButterKnife {
 
         unbinder = parseOnTouch(target, method, source);
         if (unbinder != null) unbinders.add(unbinder);
+
+        onItemSelectedBinder.parse(method);
       }
+
+      Unbinder unbinder = onItemSelectedBinder.bind(target, source);
+      if (unbinder != null) unbinders.add(unbinder);
 
       targetClass = targetClass.getSuperclass();
     }
@@ -958,6 +967,8 @@ public final class ButterKnife {
       (view, value, index) -> view.setOnItemClickListener(value);
   private static final Setter<AdapterView<?>, AdapterView.OnItemLongClickListener>
       ON_ITEM_LONG_CLICK = (view, value, index) -> view.setOnItemLongClickListener(value);
+  private static final Setter<AdapterView<?>, AdapterView.OnItemSelectedListener>
+      ON_ITEM_SELECTED = (view, value, index) -> view.setOnItemSelectedListener(value);
   private static final Setter<View, View.OnLongClickListener> ON_LONG_CLICK =
       (view, value, index) -> view.setOnLongClickListener(value);
   private static final Setter<View, View.OnTouchListener> ON_TOUCH =
@@ -972,6 +983,8 @@ public final class ButterKnife {
   private static final Class<?>[] ON_ITEM_CLICK_TYPES =
       { AdapterView.class, View.class, int.class, long.class };
   private static final Class<?>[] ON_ITEM_LONG_CLICK_TYPES = ON_ITEM_CLICK_TYPES;
+  private static final Class<?>[] ON_ITEM_SELECTED_TYPES = ON_ITEM_CLICK_TYPES;
+  private static final Class<?>[] ON_NOTHING_SELECTED_TYPES = { AdapterView.class };
   private static final Class<?>[] ON_LONG_CLICK_TYPES = ON_CLICK_TYPES;
   private static final Class<?>[] ON_TOUCH_TYPES = { View.class, MotionEvent.class };
 
@@ -998,5 +1011,139 @@ public final class ButterKnife {
     };
 
     Object[] transform(Object... arguments);
+  }
+
+  private static final class OnItemSelectedBinder {
+    private AnnotatedMethod<OnItemSelected> onItemSelected;
+    private AnnotatedMethod<OnItemSelected> onNothingSelected;
+
+    void parse(Method method) {
+      OnItemSelected annotation = method.getAnnotation(OnItemSelected.class);
+      if (annotation == null) {
+        return;
+      }
+
+      OnItemSelected.Callback callback = annotation.callback();
+      validateMember(method);
+      validateReturnType(method, void.class);
+
+      if (callback == OnItemSelected.Callback.ITEM_SELECTED) {
+        onItemSelected = new AnnotatedMethod<>(method, annotation);
+      } else if (callback == OnItemSelected.Callback.NOTHING_SELECTED) {
+        onNothingSelected = new AnnotatedMethod<>(method, annotation);
+      }
+    }
+
+    @Nullable Unbinder bind(Object target, View source) {
+      if (onItemSelected == null && onNothingSelected == null) {
+        return null;
+      }
+
+      if (onItemSelected != null) {
+        List<AdapterView<?>> onItemSelectedViews = findOnItemSelectedViews(source);
+
+        if (onNothingSelected != null) {
+          List<AdapterView<?>> onNothingSelectedViews = findOnNothingSelectedViews(source);
+
+          List<AdapterView<?>> commonViews = new ArrayList<>(onItemSelectedViews);
+          commonViews.retainAll(onNothingSelectedViews);
+          Unbinder commonUnbinder = bindCommon(target, commonViews);
+
+          List<AdapterView<?>> onlyOnItemSelectedViews = new ArrayList<>(onItemSelectedViews);
+          onlyOnItemSelectedViews.removeAll(commonViews);
+          Unbinder onItemSelectedUnbinder = bindOnItemSelected(target, onlyOnItemSelectedViews);
+
+          List<AdapterView<?>> onlyOnNothingSelectedViews =
+              new ArrayList<>(onNothingSelectedViews);
+          onlyOnNothingSelectedViews.removeAll(commonViews);
+          Unbinder onNothingSelectedUnbinder =
+              bindOnNothingSelected(target, onlyOnNothingSelectedViews);
+
+          return new CompositeUnbinder(Arrays.asList(
+              commonUnbinder, onItemSelectedUnbinder, onNothingSelectedUnbinder));
+        } else {
+          return bindOnItemSelected(target, onItemSelectedViews);
+        }
+      } else {
+        return bindOnNothingSelected(target, findOnNothingSelectedViews(source));
+      }
+    }
+
+    private List<AdapterView<?>> findOnItemSelectedViews(View source) {
+      Method onItemSelectedMethod = onItemSelected.getMethod();
+      return findViews(source, onItemSelected.getAnnotation().value(), isRequired(onItemSelectedMethod),
+          onItemSelectedMethod.getName(), AdapterView.class);
+    }
+
+    private List<AdapterView<?>> findOnNothingSelectedViews(View source) {
+      Method onNothingSelectedMethod = onNothingSelected.getMethod();
+      return findViews(source, onNothingSelected.getAnnotation().value(),
+          isRequired(onNothingSelectedMethod), onNothingSelectedMethod.getName(),
+          AdapterView.class);
+    }
+
+    private Unbinder bindCommon(final Object target, List<AdapterView<?>> views) {
+      final Method onItemSelectedMethod = onItemSelected.getMethod();
+      final Method onNothingSelectedMethod = onNothingSelected.getMethod();
+
+      final ArgumentTransformer onItemSelectedArgumentTransformer =
+          createArgumentTransformer(onItemSelectedMethod, ON_ITEM_SELECTED_TYPES);
+      final ArgumentTransformer onNothingSelectedArgumentTransformer =
+          createArgumentTransformer(onNothingSelectedMethod, ON_NOTHING_SELECTED_TYPES);
+
+      ViewCollections.set(views, ON_ITEM_SELECTED, new AdapterView.OnItemSelectedListener() {
+        @Override
+        public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+          tryInvoke(onItemSelectedMethod, target,
+              onItemSelectedArgumentTransformer.transform(parent, view, position, id));
+        }
+
+        @Override
+        public void onNothingSelected(AdapterView<?> parent) {
+          tryInvoke(onNothingSelectedMethod, target,
+              onNothingSelectedArgumentTransformer.transform(parent));
+        }
+      });
+
+      return new ListenerUnbinder<>(views, ON_ITEM_SELECTED);
+    }
+
+    private Unbinder bindOnItemSelected(final Object target, List<AdapterView<?>> views) {
+      final Method method = onItemSelected.getMethod();
+
+      final ArgumentTransformer argumentTransformer =
+          createArgumentTransformer(method, ON_ITEM_SELECTED_TYPES);
+
+      ViewCollections.set(views, ON_ITEM_SELECTED, new AdapterView.OnItemSelectedListener() {
+        @Override public void onItemSelected(
+            AdapterView<?> parent, View view, int position, long id) {
+          tryInvoke(method, target, argumentTransformer.transform(parent, view, position, id));
+        }
+
+        @Override public void onNothingSelected(AdapterView<?> parent) {
+        }
+      });
+
+      return new ListenerUnbinder<>(views, ON_ITEM_SELECTED);
+    }
+
+    private Unbinder bindOnNothingSelected(final Object target, List<AdapterView<?>> views) {
+      final Method method = onNothingSelected.getMethod();
+
+      final ArgumentTransformer argumentTransformer =
+          createArgumentTransformer(method, ON_NOTHING_SELECTED_TYPES);
+
+      ViewCollections.set(views, ON_ITEM_SELECTED, new AdapterView.OnItemSelectedListener() {
+        @Override public void onItemSelected(
+            AdapterView<?> parent, View view, int position, long id) {
+        }
+
+        @Override public void onNothingSelected(AdapterView<?> parent) {
+          tryInvoke(method, target, argumentTransformer.transform(parent));
+        }
+      });
+
+      return new ListenerUnbinder<>(views, ON_ITEM_SELECTED);
+    }
   }
 }
